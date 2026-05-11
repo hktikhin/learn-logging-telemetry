@@ -19,11 +19,15 @@ trap "kill $SERVER_PID" EXIT
 echo "Waiting for server to spin up..."
 sleep 2
 
-# 3. 触发错误逻辑：发送错误的登录信息
-echo "Triggering invalid login..."
-curl -s -X POST "$SERVER_URL/api/login" \
-     -H "Content-Type: application/json" \
-     -d '{"username":"saruman", "password":"wrong_password"}' > /dev/null
+echo "Testing Frodo (Correct)..."
+curl -i -u frodo:ofTheNineFingers -X POST "$SERVER_URL/api/login"
+
+echo "Testing Samwise (Wrong Password)..."
+curl -i -u samwise:wrong_pass -X POST "$SERVER_URL/api/login"
+
+echo "Testing Saruman (Invalid Hash Format)..."
+curl -i -u saruman:any_password -X POST "$SERVER_URL/api/login"
+
 
 # 给异步写入日志一点时间
 sleep 1

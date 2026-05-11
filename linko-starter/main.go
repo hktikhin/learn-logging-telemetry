@@ -3,6 +3,7 @@ package main
 import (
 	"bufio"
 	"context"
+	"errors"
 	"flag"
 	"fmt"
 	"log/slog"
@@ -11,11 +12,31 @@ import (
 	"syscall"
 	"time"
 
+	"boot.dev/linko/internal/linkoerr"
 	"boot.dev/linko/internal/store"
 )
 
 // var logger = log.New(os.Stderr, "DEBUG: ", log.LstdFlags)
 type closeFunc func() error
+
+func replaceAttr(groups []string, a slog.Attr) slog.Attr {
+	if a.Key == "error" {
+
+		err, ok := a.Value.Any().(error)
+		if !ok {
+			return a
+		}
+		allAttrs := []slog.Attr{
+			slog.String("message", err.Error()),
+		}
+		if stackErr, ok := errors.AsType[linkoerr.StackTracer](err); ok {
+			allAttrs = append(allAttrs, slog.String("stack_trace", fmt.Sprintf("%+v", stackErr.StackTrace())))
+		}
+		allAttrs = append(allAttrs, linkoerr.Attrs(err)...)
+		return slog.GroupAttrs("error", allAttrs...)
+	}
+	return a
+}
 
 func initializeLogger() (*slog.Logger, closeFunc, error) {
 	// var out io.Writer = os.Stderr
@@ -24,7 +45,8 @@ func initializeLogger() (*slog.Logger, closeFunc, error) {
 		return nil
 	}
 	debugHandler := slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{
-		Level: slog.LevelDebug,
+		Level:       slog.LevelDebug,
+		ReplaceAttr: replaceAttr,
 	})
 	handlers := []slog.Handler{debugHandler}
 
@@ -44,7 +66,8 @@ func initializeLogger() (*slog.Logger, closeFunc, error) {
 				return f.Close()
 			}
 			infoHandler := slog.NewJSONHandler(bufWriter, &slog.HandlerOptions{
-				Level: slog.LevelInfo,
+				Level:       slog.LevelInfo,
+				ReplaceAttr: replaceAttr,
 			})
 			handlers = append(handlers, infoHandler)
 		}
