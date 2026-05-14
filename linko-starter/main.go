@@ -1,9 +1,7 @@
 package main
 
 import (
-	"bufio"
 	"context"
-	"errors"
 	"flag"
 	"fmt"
 	"log/slog"
@@ -12,8 +10,12 @@ import (
 	"syscall"
 	"time"
 
+	"boot.dev/linko/internal/build"
 	"boot.dev/linko/internal/linkoerr"
 	"boot.dev/linko/internal/store"
+	tint "github.com/lmittmann/tint"
+	isatty "github.com/mattn/go-isatty"
+	lumberjack "gopkg.in/natefinch/lumberjack.v2"
 )
 
 // var logger = log.New(os.Stderr, "DEBUG: ", log.LstdFlags)
@@ -21,18 +23,19 @@ type closeFunc func() error
 
 func replaceAttr(groups []string, a slog.Attr) slog.Attr {
 	if a.Key == "error" {
-
 		err, ok := a.Value.Any().(error)
 		if !ok {
 			return a
 		}
-		allAttrs := []slog.Attr{
-			slog.String("message", err.Error()),
+		if me, ok := a.Value.Any().(linkoerr.MultiError); ok {
+			var errAttrs []slog.Attr
+			for i, err := range me.Unwrap() {
+				allAttrs := linkoerr.ErrorAttrs(err)
+				errAttrs = append(errAttrs, slog.GroupAttrs(fmt.Sprintf("error_%d", i+1), allAttrs...))
+			}
+			return slog.GroupAttrs("errors", errAttrs...)
 		}
-		if stackErr, ok := errors.AsType[linkoerr.StackTracer](err); ok {
-			allAttrs = append(allAttrs, slog.String("stack_trace", fmt.Sprintf("%+v", stackErr.StackTrace())))
-		}
-		allAttrs = append(allAttrs, linkoerr.Attrs(err)...)
+		allAttrs := linkoerr.ErrorAttrs(err)
 		return slog.GroupAttrs("error", allAttrs...)
 	}
 	return a
@@ -44,33 +47,35 @@ func initializeLogger() (*slog.Logger, closeFunc, error) {
 	cf = func() error {
 		return nil
 	}
-	debugHandler := slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{
+	fd := os.Stderr.Fd()
+	isTerminal := isatty.IsTerminal(fd) || isatty.IsCygwinTerminal(fd)
+	debugHandler := tint.NewHandler(os.Stderr, &tint.Options{
 		Level:       slog.LevelDebug,
 		ReplaceAttr: replaceAttr,
+		NoColor:     !isTerminal,
 	})
+
 	handlers := []slog.Handler{debugHandler}
 
 	logFile := os.Getenv("LINKO_LOG_FILE")
 	if logFile != "" {
 
-		f, err := os.OpenFile(logFile, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
-		if err != nil {
-			return nil, cf, fmt.Errorf("failed to open log file: %w", err)
-		} else {
-			bufWriter := bufio.NewWriterSize(f, 8192)
-			cf = func() error {
-				if err := bufWriter.Flush(); err != nil {
-					f.Close()
-					return err
-				}
-				return f.Close()
-			}
-			infoHandler := slog.NewJSONHandler(bufWriter, &slog.HandlerOptions{
-				Level:       slog.LevelInfo,
-				ReplaceAttr: replaceAttr,
-			})
-			handlers = append(handlers, infoHandler)
+		logger := &lumberjack.Logger{
+			Filename:   logFile,
+			MaxSize:    1,
+			MaxAge:     28,
+			MaxBackups: 10,
+			LocalTime:  false,
+			Compress:   true,
 		}
+		cf = func() error {
+			return logger.Close()
+		}
+		infoHandler := slog.NewJSONHandler(logger, &slog.HandlerOptions{
+			Level:       slog.LevelInfo,
+			ReplaceAttr: replaceAttr,
+		})
+		handlers = append(handlers, infoHandler)
 	}
 	return slog.New(slog.NewMultiHandler(handlers...)), cf, nil
 }
@@ -96,7 +101,15 @@ func run(ctx context.Context, cancel context.CancelFunc, httpPort int, dataDir s
 	// }
 	// defer accessFile.Close()
 	// accessLog := log.New(accessFile, "INFO: ", log.LstdFlags)
+	env := os.Getenv("ENV")
+	hostname, _ := os.Hostname()
 	logger, closeLog, err := initializeLogger()
+	logger = logger.With(
+		slog.String("git_sha", build.GitSHA),
+		slog.String("build_time", build.BuildTime),
+		slog.String("env", env),
+		slog.String("hostname", hostname),
+	)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "failed to initialize logger: %v\n", err)
 		return 1

@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net/http"
@@ -27,12 +28,12 @@ func (s *server) authMiddleware(next http.Handler) http.Handler {
 		username, password, ok := r.BasicAuth()
 		if !ok {
 			s.logger.Info(fmt.Sprintf("%s User not exists", username))
-			http.Error(w, "Unauthorized", http.StatusUnauthorized)
+			httpError(r.Context(), w, errors.New("Unauthorized"), http.StatusUnauthorized)
 			return
 		}
 		stored, exists := allowedUsers[username]
 		if !exists {
-			http.Error(w, "Unauthorized", http.StatusUnauthorized)
+			httpError(r.Context(), w, errors.New("Unauthorized"), http.StatusUnauthorized)
 			return
 		}
 		ok, err := s.validatePassword(password, stored)
@@ -42,15 +43,18 @@ func (s *server) authMiddleware(next http.Handler) http.Handler {
 				"error",
 				err,
 			)
-			http.Error(w, "Internal Server Error", http.StatusInternalServerError)
+			httpError(r.Context(), w, errors.New("Internal Server Error"), http.StatusInternalServerError)
 			return
 		}
 		if !ok {
 			s.logger.Info(fmt.Sprintf("%s User password not match", username))
-			http.Error(w, "Unauthorized", http.StatusUnauthorized)
+			httpError(r.Context(), w, errors.New("Unauthorized"), http.StatusUnauthorized)
 			return
 		}
 		r = r.WithContext(context.WithValue(r.Context(), UserContextKey, username))
+		if lc, ok := r.Context().Value(logContextKey).(*LogContext); ok {
+			lc.Username = username
+		}
 		next.ServeHTTP(w, r)
 	})
 }

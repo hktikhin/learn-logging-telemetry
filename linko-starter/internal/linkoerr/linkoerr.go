@@ -2,12 +2,18 @@ package linkoerr
 
 import (
 	"errors"
+	"fmt"
 	"log/slog"
 
 	pkgerr "github.com/pkg/errors"
 )
 
-type StackTracer interface {
+type MultiError interface {
+	error
+	Unwrap() []error
+}
+
+type stackTracer interface {
 	error
 	StackTrace() pkgerr.StackTrace
 }
@@ -15,6 +21,17 @@ type StackTracer interface {
 type errWithAttrs struct {
 	error
 	attrs []slog.Attr
+}
+
+func ErrorAttrs(err error) []slog.Attr {
+	allAttrs := []slog.Attr{
+		slog.String("message", err.Error()),
+	}
+	if stackErr, ok := errors.AsType[stackTracer](err); ok {
+		allAttrs = append(allAttrs, slog.String("stack_trace", fmt.Sprintf("%+v", stackErr.StackTrace())))
+	}
+	allAttrs = append(allAttrs, Attrs(err)...)
+	return allAttrs
 }
 
 func WithAttrs(err error, args ...any) error {
