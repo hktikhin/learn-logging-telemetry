@@ -5,8 +5,10 @@ import (
 	"flag"
 	"fmt"
 	"log/slog"
+	"net/url"
 	"os"
 	"os/signal"
+	"slices"
 	"syscall"
 	"time"
 
@@ -22,6 +24,7 @@ import (
 type closeFunc func() error
 
 func replaceAttr(groups []string, a slog.Attr) slog.Attr {
+	var sensitiveKeys = []string{"password", "key", "apikey", "secret", "pin", "creditcardno", "user"}
 	if a.Key == "error" {
 		err, ok := a.Value.Any().(error)
 		if !ok {
@@ -37,6 +40,16 @@ func replaceAttr(groups []string, a slog.Attr) slog.Attr {
 		}
 		allAttrs := linkoerr.ErrorAttrs(err)
 		return slog.GroupAttrs("error", allAttrs...)
+	}
+	if slices.Contains(sensitiveKeys, a.Key) {
+		return slog.String(a.Key, "[REDACTED]")
+	}
+	if a.Value.Kind() == slog.KindString {
+		valStr := a.Value.String()
+		if u, err := url.Parse(valStr); err == nil && u.User != nil {
+			u.User = url.User("[REDACTED]")
+			return slog.String(a.Key, u.String())
+		}
 	}
 	return a
 }
