@@ -40,6 +40,34 @@ type LogContext struct {
 	Error    error
 }
 
+func redactIP(address string) string {
+	host, port, err := net.SplitHostPort(address)
+	if err != nil {
+		// If splitting fails, the string might just be an IP without a port.
+		host = address
+		port = ""
+	}
+
+	ip := net.ParseIP(host)
+	// Check if it is a valid IP and specifically an IPv4 address.
+	// ip.To4() returns a 4-byte representation if valid, or nil if IPv6/invalid.
+	if ip == nil || ip.To4() == nil {
+		return address
+	}
+
+	// Extract the 4-byte IPv4 slice
+	ipv4 := ip.To4()
+
+	// Rebuild the masked IP string cleanly using a strings.Builder for performance.
+	maskedHost := fmt.Sprintf("%d.%d.%d.*", ipv4[0], ipv4[1], ipv4[2])
+
+	// Append the port back if it was originally present
+	if port != "" {
+		return net.JoinHostPort(fmt.Sprintf("%d.%d.%d.*", ipv4[0], ipv4[1], ipv4[2]), port)
+	}
+	return maskedHost
+}
+
 func httpError(ctx context.Context, w http.ResponseWriter, err error, status int) {
 	if logCtx, ok := ctx.Value(logContextKey).(*LogContext); ok {
 		logCtx.Error = err
@@ -97,7 +125,7 @@ func requestLogger(logger *slog.Logger) func(http.Handler) http.Handler {
 			attrs := []slog.Attr{
 				slog.String("method", r.Method),
 				slog.String("path", r.URL.Path),
-				slog.String("client_ip", r.RemoteAddr),
+				slog.String("client_ip", redactIP(r.RemoteAddr)),
 				slog.Duration("duration", time.Since(start)),
 				slog.Int("request_body_bytes", spyReader.bytesRead),
 				slog.Int("response_status", spyWriter.statusCode),
@@ -156,7 +184,7 @@ func newServer(store store.Store, port int, cancel context.CancelFunc, logger *s
 }
 
 func (s *server) start() error {
-	ln, err := net.Listen("tcp", s.httpServer.Addr)
+	ln, err := net.Listen("tcp4", s.httpServer.Addr)
 	if err != nil {
 		return err
 	}
