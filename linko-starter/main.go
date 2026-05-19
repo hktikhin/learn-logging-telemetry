@@ -17,8 +17,15 @@ import (
 	"boot.dev/linko/internal/store"
 	tint "github.com/lmittmann/tint"
 	isatty "github.com/mattn/go-isatty"
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracegrpc"
+	"go.opentelemetry.io/otel/sdk/resource"
+	sdktrace "go.opentelemetry.io/otel/sdk/trace"
+	"go.opentelemetry.io/otel/trace"
 	lumberjack "gopkg.in/natefinch/lumberjack.v2"
 )
+
+var tracer trace.Tracer
 
 // var logger = log.New(os.Stderr, "DEBUG: ", log.LstdFlags)
 type closeFunc func() error
@@ -93,6 +100,24 @@ func initializeLogger() (*slog.Logger, closeFunc, error) {
 	return slog.New(slog.NewMultiHandler(handlers...)), cf, nil
 }
 
+func initTracing(ctx context.Context) (func(context.Context) error, error) {
+	exp, err := otlptracegrpc.New(ctx)
+	if err != nil {
+		return nil, err
+	}
+
+	tp := sdktrace.NewTracerProvider(
+		sdktrace.WithBatcher(exp,
+			sdktrace.WithBatchTimeout(2*time.Second),
+		),
+		sdktrace.WithResource(resource.Default()),
+	)
+
+	otel.SetTracerProvider(tp)
+	tracer = otel.Tracer("boot.dev/linko")
+	return tp.Shutdown, nil
+}
+
 func main() {
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 
@@ -116,6 +141,18 @@ func run(ctx context.Context, cancel context.CancelFunc, httpPort int, dataDir s
 	// accessLog := log.New(accessFile, "INFO: ", log.LstdFlags)
 	env := os.Getenv("ENV")
 	hostname, _ := os.Hostname()
+	shutdown, err := initTracing(ctx)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "failed to initialize tracing: %v\n", err)
+		return 1
+	}
+	defer func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		if err := shutdown(ctx); err != nil {
+			fmt.Fprintf(os.Stderr, "DEBUG: failed to shutdown tracing: %v\n", err)
+		}
+	}()
 	logger, closeLog, err := initializeLogger()
 	logger = logger.With(
 		slog.String("git_sha", build.GitSHA),

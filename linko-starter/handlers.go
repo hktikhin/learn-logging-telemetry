@@ -27,15 +27,21 @@ var (
 var indexPage string
 
 func (s *server) handlerIndex(w http.ResponseWriter, r *http.Request) {
+	_, span := tracer.Start(r.Context(), "handler.index")
+	defer span.End()
 	w.Header().Set("Content-Type", "text/html")
 	io.WriteString(w, indexPage)
 }
 
 func (s *server) handlerLogin(w http.ResponseWriter, r *http.Request) {
+	_, span := tracer.Start(r.Context(), "handler.login")
+	defer span.End()
 	w.WriteHeader(http.StatusOK)
 }
 
 func (s *server) handlerShortenLink(w http.ResponseWriter, r *http.Request) {
+	_, span := tracer.Start(r.Context(), "handler.shorten_link")
+	defer span.End()
 	user, ok := r.Context().Value(UserContextKey).(string)
 	if !ok || user == "" {
 		httpError(r.Context(), w, errors.New("unauthorized"), http.StatusUnauthorized)
@@ -51,7 +57,7 @@ func (s *server) handlerShortenLink(w http.ResponseWriter, r *http.Request) {
 		httpError(r.Context(), w, errors.New("invalid URL: must include scheme (http/https) and host"), http.StatusBadRequest)
 		return
 	}
-	if err := checkDestination(longURL); err != nil {
+	if err := checkDestination(r.Context(), longURL); err != nil {
 		httpError(r.Context(), w, fmt.Errorf("invalid target URL: %v", err), http.StatusBadRequest)
 		return
 	}
@@ -85,7 +91,7 @@ func (s *server) handlerRedirect(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	_, _ = bcrypt.GenerateFromPassword([]byte(longURL), bcrypt.DefaultCost)
-	if err := checkDestination(longURL); err != nil {
+	if err := checkDestination(r.Context(), longURL); err != nil {
 		httpError(r.Context(), w, errors.New("destination unavailable"), http.StatusBadGateway)
 		return
 	}
